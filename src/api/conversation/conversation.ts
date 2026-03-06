@@ -1,13 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
-import crypto from "crypto";
 import { createResponse } from "../helpers/openai";
 
 const router = Router();
 
-const AGENT_A = process.env.AGENT_A
+const AGENT_A = process.env.AGENT_A ?? 'AGENT_A'
 
-const AGENT_B = process.env.AGENT_B
+const AGENT_B = process.env.AGENT_B ?? 'AGENT_B'
 
 // Request bodies (match your schemas)
 const StartSchema = z.object({  
@@ -18,13 +17,6 @@ const FeedbackSchema = z.object({
     feedback: z.boolean()
 })
 
-type ConversationState = {  
-    id: string;   
-    lastOpenAIResponseId?: string;
-}
-
-const conversations = new Map<string, ConversationState>()
-
 type Message = {
     id: string;
     message: string[];
@@ -34,10 +26,6 @@ type Message = {
 type AgentType = {
     AGENT_A: Message;
     AGENT_B: Message;
-}
-
-function newId() {  
-    return crypto.randomUUID();
 }
 
 // helper: builds the “self-chat” instruction
@@ -52,46 +40,37 @@ function systemPrompt() {
       Over the course of the conversation, get more contentious.`;
 }
 
+const instruction = function(feedback: boolean) {    
+    return feedback 
+    ? `Continue the ${AGENT_A}/${AGENT_B} conversation by reinforcing what made it more entertaining.` 
+    : `Continue the ${AGENT_A}/${AGENT_B} conversation by making it more about crabs.`
+}
+
 function transformResponse(openaiResp: Record<string, any>) {
 
-    const conversationSets = openaiResp.output.map((o: { id: string, content: { text: string }[]}) => {
+    const conversationSets: {id: string, message: string[]}[] = openaiResp.output.map((o: { id: string, content: { text: string }[]}) => {
         const message = o.content.map((c: {text: string}) => c.text)
         return {id: o.id, message }
     })
 
-    // console.log({conversationSets})
+    const agents: Record<string, Message> = {}
 
-    const agents: AgentType = {
-        AGENT_A: { id: "", message: [], name: "" },
-        AGENT_B: { id: "", message: [], name: "" }
-    }
-
-    conversationSets.forEach((cs: {id: string, message: string[]}) => {
-        // console.log(cs)
-        cs.message.forEach((m: string) => {
+    for (let cs of conversationSets) {
+        for (let m of cs.message) {
             const conversationArray = m.split("\n\n")
 
-            // console.log(conversationArray)
+            for (let agent of [AGENT_A, AGENT_B]) {
+                const message = conversationArray.filter((i: string) => i.indexOf(`${agent}:`) >= 0).map(i2 => i2.replace(`${agent}: `,""))
 
-            const AGENT_A_TEXT = conversationArray.filter((i: string) => i.indexOf(`${AGENT_A}:`) >= 0)
-            const AGENT_B_TEXT = conversationArray.filter((i: string) => i.indexOf(`${AGENT_B}:`) >= 0)
-
-            agents.AGENT_A = {
-                id: cs.id,
-                name: AGENT_A,
-                message: []
+                agents[agent] = {
+                    'id': cs.id,
+                    'name': agent,
+                    message
+                }
             }
-            agents.AGENT_A.message.push(typeof AGENT_A_TEXT !== undefined ? AGENT_A_TEXT[0].replace(`${AGENT_A}: `,"") : "")
 
-            agents.AGENT_B = {
-                id: cs.id,
-                name: AGENT_B,
-                message: []
-            }
-            agents.AGENT_B.message.push(typeof AGENT_B_TEXT !== undefined ? AGENT_B_TEXT[0].replace(`${AGENT_B}: `,"") : "")
-
-        })
-    })
+        }
+    }
 
     return agents;
 }
@@ -102,10 +81,6 @@ router.post("/start", async (req, res) => {
     
     const { message } = parsed.data;
     
-    const conversationId = newId(); 
-    conversations.set(conversationId, { id: conversationId });
-    
-    // Call OpenAI Responses API :contentReference[oaicite:3]{index=3}  
     const openaiResp = await createResponse({ 
       model: process.env.OPENAI_MODEL || "gpt-5.2",  
       input: [    
@@ -113,14 +88,6 @@ router.post("/start", async (req, res) => {
         { role: "user", content: `Kick off the conversation about: ${message}` }
       ], 
     });
-    
-    // Save response id if present (Responses API returns an id you can store)  
-    const responseId = openaiResp?.id;    
-    if (responseId) {   
-      const st = conversations.get(conversationId)!;   
-      st.lastOpenAIResponseId = responseId;    
-      conversations.set(conversationId, st);    
-    }
 
     const agents = transformResponse(openaiResp)
 
@@ -131,20 +98,15 @@ router.post("/start", async (req, res) => {
 
 router.post("/message", async (req, res) => {   
     const parsed = FeedbackSchema.safeParse(req.body); 
-    if (!parsed.success) return res.status(400).json({ detail: parsed.error.flatten() });
+    if (!parsed.success) return res.status(400).json({ detail: z.treeifyError(parsed.error) });
 
     const { feedback } = parsed.data;
 
-    // Different behavior based on feedback 
-    const instruction = feedback 
-    ? `Continue the ${AGENT_A}/${AGENT_B} conversation by reinforcing what made it more entertaining.` 
-    : `Continue the ${AGENT_A}/${AGENT_B} conversation by making it more about crabs.`;
-
     const openaiResp = await createResponse({   
-        model: process.env.OPENAI_MODEL || "gpt-4.1",    
+        model: process.env.OPENAI_MODEL || "gpt-5.2",    
         input: [  
             { role: "system", content: systemPrompt() },  
-            { role: "user", content: instruction },   
+            { role: "user", content: instruction(feedback) },   
             { role: "user", content: `Meta: feedback=${feedback}` },    
         ],    
     });
