@@ -23,11 +23,6 @@ type Message = {
     name?: string;
 }
 
-type AgentType = {
-    AGENT_A: Message;
-    AGENT_B: Message;
-}
-
 // helper: builds the “self-chat” instruction
 function systemPrompt() {   
     return `You are two agents, ${AGENT_A} and ${AGENT_B}.
@@ -40,13 +35,16 @@ function systemPrompt() {
       Over the course of the conversation, get more contentious.`;
 }
 
-const instruction = function(feedback: boolean) {    
-    return feedback 
-    ? `Continue the ${AGENT_A}/${AGENT_B} conversation by reinforcing what made it more entertaining.` 
-    : `Continue the ${AGENT_A}/${AGENT_B} conversation by making it more about crabs.`
+function instruction(feedback: boolean) {
+    return feedback
+        ? `Continue the ${AGENT_A}/${AGENT_B} conversation by reinforcing what made it more entertaining.`
+        : `Continue the ${AGENT_A}/${AGENT_B} conversation by making it more about crabs.`
 }
 
 function transformResponse(openaiResp: Record<string, any>) {
+    if (!Array.isArray(openaiResp.output)) {
+        throw new Error("Unexpected OpenAI response shape")
+    }
 
     const conversationSets: {id: string, message: string[]}[] = openaiResp.output.map((o: { id: string, content: { text: string }[]}) => {
         const message = o.content.map((c: {text: string}) => c.text)
@@ -80,20 +78,19 @@ router.post("/start", async (req, res) => {
     if (!parsed.success) return res.status(400).json({ detail: z.treeifyError(parsed.error) });
     
     const { message } = parsed.data;
-    
-    const openaiResp = await createResponse({ 
-      model: process.env.OPENAI_MODEL || "gpt-5.2",  
-      input: [    
-        { role: "system", content: systemPrompt() },    
-        { role: "user", content: `Kick off the conversation about: ${message}` }
-      ], 
-    });
 
-    const agents = transformResponse(openaiResp)
-
-    return res.json({
-        ...agents
-    });
+    try {
+        const openaiResp = await createResponse({
+            model: process.env.OPENAI_MODEL || "gpt-5.2",
+            input: [
+                { role: "system", content: systemPrompt() },
+                { role: "user", content: `Kick off the conversation about: ${message}` }
+            ],
+        });
+        return res.json({ ...transformResponse(openaiResp) });
+    } catch (err: any) {
+        return res.status(500).json({ detail: err.message || "Internal server error" });
+    }
 });
 
 router.post("/message", async (req, res) => {   
@@ -102,20 +99,19 @@ router.post("/message", async (req, res) => {
 
     const { feedback } = parsed.data;
 
-    const openaiResp = await createResponse({   
-        model: process.env.OPENAI_MODEL || "gpt-5.2",    
-        input: [  
-            { role: "system", content: systemPrompt() },  
-            { role: "user", content: instruction(feedback) },   
-            { role: "user", content: `Meta: feedback=${feedback}` },    
-        ],    
-    });
-
-    const agents = transformResponse(openaiResp)
-
-    return res.json({
-        ...agents
-    });
+    try {
+        const openaiResp = await createResponse({
+            model: process.env.OPENAI_MODEL || "gpt-5.2",
+            input: [
+                { role: "system", content: systemPrompt() },
+                { role: "user", content: instruction(feedback) },
+                { role: "user", content: `Meta: feedback=${feedback}` },
+            ],
+        });
+        return res.json({ ...transformResponse(openaiResp) });
+    } catch (err: any) {
+        return res.status(500).json({ detail: err.message || "Internal server error" });
+    }
 });
 
 export default router;

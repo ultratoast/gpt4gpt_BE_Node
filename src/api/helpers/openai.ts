@@ -10,7 +10,6 @@ type ResponsesCreateBody = {
 export async function createResponse(body: ResponsesCreateBody) {
     const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) throw new Error("Missing OPENAI_API_KEY")
-    // console.log(JSON.stringify(body))
     const res = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
